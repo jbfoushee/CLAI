@@ -1,0 +1,2 @@
+# CLAI
+CodeLouisville AI course
