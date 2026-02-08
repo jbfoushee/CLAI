@@ -301,42 +301,10 @@ def create_agent_executor(vector_store, chat_model=None):
         MessagesPlaceholder(variable_name="agent_scratchpad"),
     ])
 
+    agent = create_react_agent(llm=chat_model, tools=[search_tool], prompt=prompt)
 
-    class SimpleAgentExecutor:
-        def __init__(self, llm, tool):
-            self.llm = llm
-            self.tool = tool
-
-        def invoke(self, inputs: dict):
-            query = inputs.get("input", "")
-            chat_history = inputs.get("chat_history", [])
-
-            # Run the search tool to get supporting chunks
-            try:
-                search_results = self.tool(query)
-            except Exception as e:
-                search_results = f"(search failed: {e})"
-
-            # Build a prompt for the LLM that includes the search results
-            prompt = (
-                "You are a helpful assistant that answers questions about company policies, "
-                "benefits, and procedures. Use the search results below to answer the user's "
-                "question and cite which document chunks you used.\n\n"
-                f"Search results:\n{search_results}\n\n"
-                f"User question: {query}\n\nAnswer:" 
-            )
-
-            # Try to call the chat model; if the API shape differs, fall back to returning search results
-            try:
-                llm_response = self.llm(prompt)
-                # llm_response may be a string or an object with content
-                response_text = llm_response if isinstance(llm_response, str) else getattr(llm_response, "content", str(llm_response))
-            except Exception:
-                response_text = f"Search results:\n{search_results}"
-
-            return {"output": response_text}
-
-    return SimpleAgentExecutor(chat_model, search_tool)
+    executor = AgentExecutor(agent=agent, tools=[search_tool], verbose=True, handle_parsing_errors=True)
+    return executor
 
 def main():
     print("🤖 Python LangChain Agent Starting...\n")
