@@ -6,99 +6,10 @@ from langchain_openai import OpenAIEmbeddings
 from langchain_core.vectorstores import InMemoryVectorStore
 from langchain_core.documents import Document
 from langchain_text_splitters import CharacterTextSplitter, RecursiveCharacterTextSplitter, MarkdownHeaderTextSplitter
-try:
-    from langchain_core.messages import HumanMessage, AIMessage, SystemMessage
-except Exception:
-    class HumanMessage:
-        def __init__(self, content):
-            self.content = content
-
-    class AIMessage:
-        def __init__(self, content):
-            self.content = content
-
-    class SystemMessage:
-        def __init__(self, content):
-            self.content = content
-# Older helper functions like `create_react_agent` may be absent in newer
-# langchain versions; we'll implement a tiny compatibility agent below.
+from langchain_core.messages import HumanMessage, AIMessage
+from langchain.agents import create_react_agent
 from langchain_core.prompts import ChatPromptTemplate, MessagesPlaceholder, SystemMessagePromptTemplate, HumanMessagePromptTemplate
-try:
-    from langchain.chat_models import ChatOpenAI
-except Exception:
-    ChatOpenAI = None
-
-def create_chat_model(**kwargs):
-    """Return a chat model instance. Prefer LangChain's `ChatOpenAI` if
-    available; otherwise fall back to a minimal wrapper around the
-    `openai` package's ChatCompletion API.
-    """
-    if ChatOpenAI is not None:
-        return ChatOpenAI(**kwargs)
-
-    try:
-        import openai
-    except Exception:
-        raise ImportError("Neither `langchain.chat_models.ChatOpenAI` is available nor the `openai` package is installed. Install `openai` or use a LangChain version that provides ChatOpenAI.")
-
-    class ChatOpenAICompat:
-        def __init__(self, temperature=0, model_name="gpt-3.5-turbo", api_key_env="OPENAI_API_KEY", **_):
-            self.temperature = temperature
-            self.model = model_name
-            # Prefer the named env var, but fall back to GITHUB_TOKEN (used
-            # earlier for embeddings) or other common OpenAI env vars.
-            possible_vars = [api_key_env, "GITHUB_TOKEN", "OPENAI_API_KEY", "OPENAI_API_KEY_V1"]
-            self.api_key = None
-            for var in possible_vars:
-                self.api_key = os.getenv(var)
-                if self.api_key:
-                    break
-            if not self.api_key:
-                raise EnvironmentError(f"OpenAI API key not found in env vars: {possible_vars}")
-            openai.api_key = self.api_key
-
-        def __call__(self, messages):
-            # Convert message objects to OpenAI-compatible dicts
-            openai_messages = []
-            for m in messages:
-                role = getattr(m, "role", None)
-                content = getattr(m, "content", None)
-                if role is None:
-                    # Heuristic: SystemMessage => system, HumanMessage => user, AIMessage => assistant
-                    tname = type(m).__name__.lower()
-                    if "system" in tname:
-                        role = "system"
-                    elif "human" in tname:
-                        role = "user"
-                    else:
-                        role = "assistant"
-                openai_messages.append({"role": role, "content": content})
-
-            # Detect openai package version and pick the correct API.
-            ver = getattr(openai, "__version__", None)
-            use_new = None
-            if ver:
-                try:
-                    major = int(ver.split(".")[0])
-                    use_new = major >= 1
-                except Exception:
-                    use_new = hasattr(openai, "OpenAI")
-            else:
-                use_new = hasattr(openai, "OpenAI")
-
-            if use_new:
-                client = openai.OpenAI(api_key=self.api_key)
-                resp = client.chat.completions.create(model=self.model, messages=openai_messages, temperature=self.temperature)
-                try:
-                    return resp.choices[0].message.content
-                except Exception:
-                    return resp["choices"][0]["message"]["content"]
-            else:
-                # Older openai package (pre-1.0) — safe to call ChatCompletion
-                resp = openai.ChatCompletion.create(model=self.model, messages=openai_messages, temperature=self.temperature)
-                return resp["choices"][0]["message"]["content"]
-
-    return ChatOpenAICompat(**kwargs)
+from langchain.chat_models import ChatOpenAI
 from langchain_core.tools import tool
 
 # Load environment variables
@@ -322,11 +233,8 @@ def load_with_markdown_header_chunking(vector_store, file_path: str):
     chunker = RecursiveCharacterTextSplitter(chunk_size=1500, chunk_overlap=200)
     docs = []
     for sec in sections:
-        # `sections` may contain `Document` objects or plain strings depending
-        # on the installed splitter version. Normalize to string content.
-        sec_text = getattr(sec, "page_content", None) or getattr(sec, "text", None) or sec
-        docs_for_section = chunker.create_documents([sec_text])
-        docs.extend(docs_for_section)
+        sec_docs = chunker.create_documents([sec])
+        docs.extend(sec_docs)
 
     sizes = [len(d.page_content) for d in docs]
     num_chunks = len(docs)
@@ -380,7 +288,7 @@ def create_agent_executor(vector_store, chat_model=None):
     If `chat_model` is None, a default `ChatOpenAI` instance is created.
     """
     if chat_model is None:
-        chat_model = create_chat_model(temperature=0)
+        chat_model = ChatOpenAI(temperature=0)
 
     search_tool = create_search_tool(vector_store)
 
@@ -393,40 +301,7 @@ def create_agent_executor(vector_store, chat_model=None):
         MessagesPlaceholder(variable_name="agent_scratchpad"),
     ])
 
-    # Implement a very small agent that uses the search tool first,
-    # then asks the chat model to produce a final answer including the
-    # tool output. This avoids depending on `create_react_agent`.
-    class SimpleAgent:
-        def __init__(self, llm, tool_fn, system_message: str):
-            self.llm = llm
-            self.tool_fn = tool_fn
-            self.system_message = system_message
-
-        def run(self, user_input: str) -> str:
-            try:
-                tool_output = self.tool_fn(user_input)
-            except Exception as e:
-                tool_output = f"(search tool error: {e})"
-
-            # Compose messages for the chat model: system + tool output + user question
-            messages = [
-                SystemMessage(content=self.system_message),
-                HumanMessage(content=f"Search results:\n{tool_output}\n\nUser question: {user_input}"),
-            ]
-
-            try:
-                response = self.llm(messages)
-                # `response` may be an AIMessage or an object with `content`
-                if hasattr(response, "content"):
-                    return response.content
-                # Some LangChain versions return a dict-like result
-                if isinstance(response, dict) and "output_text" in response:
-                    return response["output_text"]
-                return str(response)
-            except Exception as e:
-                return f"(LLM error: {e})"
-
-    agent = SimpleAgent(llm=chat_model, tool_fn=search_tool, system_message=system_msg)
+    agent = create_react_agent(llm=chat_model, tools=[search_tool], prompt=prompt)
 
     class AgentExecutorCompat:
         """Compatibility wrapper that provides a minimal `invoke()` API
@@ -445,6 +320,7 @@ def create_agent_executor(vector_store, chat_model=None):
             else:
                 user_input = inputs
 
+            # Call the agent's run method; return in the same shape used below
             result = self.agent.run(user_input)
             return {"output": result}
 
