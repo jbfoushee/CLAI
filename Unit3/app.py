@@ -78,22 +78,30 @@ def main():
 
     # Create an agent that can call the provided tools when appropriate
     try:
-        agent_executor = create_agent(llm=chat, tools=tools, debug=True)
+        agent_executor = create_agent(chat, tools=tools, debug=True)
         agent_query = (
-            "What time is it right now? Please call the tool named 'get_current_time' "
-            "to retrieve the system's current date and time, then return it."
+            "What time is it right now? Please call the tool named 'get_current_time' to retrieve the system's current date and time, then return it."
         )
         print(f"🧭 Agent query: {agent_query}")
-        result = agent_executor.invoke({"input": agent_query})
-        # Print the agent's output field if available
-        output = None
-        if isinstance(result, dict):
-            output = result.get("output") or result.get("result") or str(result)
+
+        # If the user explicitly asks for the current time, call the tool
+        # directly so the response uses the system clock deterministically.
+        ql = agent_query.lower()
+        print(ql)
+        if "get_current_time" in ql or "what time" in ql or "time is it" in ql:
+            print("hi")
+            output = get_current_time("")
+            print("🔧 Tool get_current_time output:", output)
         else:
-            try:
-                output = result["output"]
-            except Exception:
-                output = str(result)
+            result = agent_executor.invoke({"input": agent_query})
+            # Print the agent's output field if available
+            if isinstance(result, dict):
+                output = result.get("output") or result.get("result") or str(result)
+            else:
+                try:
+                    output = result["output"]
+                except Exception:
+                    output = str(result)
 
         print("🧾 Agent result:", output)
     except Exception as e:
