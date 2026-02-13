@@ -316,10 +316,10 @@ def load_with_markdown_header_chunking(vector_store, file_path: str):
         print(f"❌ Error reading file {file_path}: {e}")
         return 0
 
-    header_splitter = MarkdownHeaderTextSplitter(headers_to_split_on=[("#", "Header 1"), ("##", "Header 2"), ("###", "Header 3")])
+    header_splitter = MarkdownHeaderTextSplitter(headers_to_split_on=[("#", "Header 1"), ("##", "Header 2")])
     sections = header_splitter.split_text(text)
 
-    chunker = RecursiveCharacterTextSplitter(chunk_size=1500, chunk_overlap=200)
+    chunker = RecursiveCharacterTextSplitter(chunk_size=8000, chunk_overlap=200)
     docs = []
     for sec in sections:
         # `sections` may contain `Document` objects or plain strings depending
